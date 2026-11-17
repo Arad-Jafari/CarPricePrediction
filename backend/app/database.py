@@ -29,6 +29,11 @@ engine = make_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+def init_db(database_engine=None) -> None:
+    target_engine = database_engine or engine
+    Base.metadata.create_all(bind=target_engine)
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:

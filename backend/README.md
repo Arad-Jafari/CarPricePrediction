@@ -21,11 +21,19 @@ The backend's exact configuration variable names are `ENVIRONMENT`,
 `DATABASE_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`,
 `POSTGRES_USER`, `POSTGRES_PASSWORD`, `JWT_SECRET_KEY`, `JWT_ALGORITHM`,
 `ACCESS_TOKEN_MINUTES`, `REFRESH_TOKEN_DAYS`, `MODEL_PATH`,
-`PREPROCESSOR_PATH`, `CORS_ORIGINS`, and `CHAT_PROVIDER`. `JWT_ALGORITHM`
-defaults to `HS256`; only `HS256`, `HS384`, and `HS512` are accepted, and
-production signing keys must meet the selected algorithm's minimum byte length.
-`MODEL_PATH` and `PREPROCESSOR_PATH` default to the artifacts bundled with
-`ml.inference`; set them in Compose only when mounting artifacts elsewhere.
+`PREPROCESSOR_PATH`, `CORS_ORIGINS`, `CHAT_PROVIDER`, `AI_ENABLED`,
+`OLLAMA_BASE_URL`, `OLLAMA_CHAT_MODEL` (legacy alias: `DEFAULT_MODEL`),
+`AI_CONTEXT_WINDOW`, `AI_MAX_HISTORY_MESSAGES`, `AI_TEMPERATURE`,
+`AI_ENABLE_RAG`, `AI_ENABLE_TOOLS`, `AI_STORAGE_PATH`, `AI_VECTOR_DB_PATH`,
+`EMBEDDING_MODEL`, `EMBEDDING_DIMENSION`, and `AUTO_LOAD_OLLAMA`.
+`JWT_ALGORITHM` defaults to `HS256`; only `HS256`, `HS384`, and `HS512` are
+accepted, and production signing keys must meet the selected algorithm's
+minimum byte length. `MODEL_PATH` and `PREPROCESSOR_PATH` default to the
+artifacts bundled with `ml.inference`; set them in Compose only when mounting
+artifacts elsewhere. `AI_ENABLED` defaults to false in application settings.
+When enabled, the application creates an Ollama provider using
+`OLLAMA_BASE_URL` and `OLLAMA_CHAT_MODEL`; alternatively `CHAT_PROVIDER` may
+name a dotted Python class implementing the provider interface.
 
 From the repository root, apply migrations and run the service:
 
@@ -41,15 +49,16 @@ Alembic migrations add active-user status and optional message metadata, and
 store prediction prices with a fixed-precision numeric database type.
 
 All prediction, history, and conversation endpoints require a bearer access
-token. No AI response provider is configured by default. Chat message submission
-still persists the user's note and returns `{items: [user_message],
-assistant_response_available: false}`; it does not fabricate an assistant
-response. When `CHAT_PROVIDER` names a configured dotted Python class
-implementing `generate_reply(messages)`, a real response is generated and both
-messages are persisted and returned with `assistant_response_available: true`.
-If that configured provider fails, the request returns an error and does not
-store either message. Conversation/message retrieval and title editing work
-regardless.
+token. With the Ollama provider enabled, the API can discover installed models,
+validate model selections, build bounded conversation context, and stream
+provider tokens as authenticated Server-Sent Events. User messages are saved
+before generation; completed assistant messages are saved after generation.
+Partial output is marked `interrupted` if streaming fails or is cancelled.
+Without an available provider, non-streaming message submission persists only
+the user's note and returns `assistant_response_available: false`; it never
+fabricates an AI reply. A custom provider may implement non-streaming
+`generate_reply(messages)` and/or the streaming provider contract. Conversation
+history, rename, delete, search, and message retrieval are user-scoped.
 
 Frontend-facing routes are available both without a prefix (`/auth`, `/users`,
 `/predictions`, `/conversations`) and under `/api`. Registration accepts
@@ -65,8 +74,11 @@ lists, details, and message collections use `{items: [...]}`; message
 submission accepts `{content}` and returns stored messages only when a
 configured provider supplied an actual assistant response. Without one, the
 user message is still stored and returned alone; clients should not display an
-AI reply. Conversation titles can be edited with authenticated
-`PATCH /api/v1/conversations/{conversation_id}`. Conversation list responses
+AI reply. `POST /api/v1/conversations/{id}/messages/stream` and
+`POST /api/v1/conversations/{id}/messages/{message_id}/regenerate/stream`
+return `start`, `token`, `done`, and `error` SSE events. Conversation titles can
+be edited with authenticated `PATCH /api/v1/conversations/{conversation_id}`.
+Conversation list responses
 include `total`, counting the current user's conversations after search filters
 and before pagination. `DELETE /api/v1/predictions` clears only the authenticated user's
 prediction history. Feature metadata is returned as `{features: [...], target:
@@ -85,5 +97,7 @@ Health, model metadata, and the supported feature contract are available at
 `/api/v1/health`, `/api/v1/model/info`, and `/api/v1/model/features`. Model
 artifacts are initialized in the FastAPI lifespan on startup with the configured
 paths; tests may inject a predictor to avoid loading them. Model info includes
-`chat_assistant_available`, which is true only when the configured real provider
-has loaded; otherwise chat accepts savable user notes without an AI response.
+`chat_assistant_available`, which is true only when the configured provider has
+loaded and passed its health check; otherwise chat accepts savable user notes
+without an AI response. See `docs/ai-assistant/README.md` for the architecture,
+local setup, current limitations, and verification instructions.

@@ -2,14 +2,15 @@ import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   Activity, ArrowDownRight, ArrowRight, ArrowUpRight, CarFront, Check, ChevronDown,
-  CircleHelp, Eye, EyeOff, Gauge, History, LayoutDashboard, LogOut, Menu, MessageCircle,
+  CircleHelp, Copy, Eye, EyeOff, Gauge, History, LayoutDashboard, LogOut, Menu, MessageCircle,
 
   Pencil, Plus, Search, ShieldCheck, Sparkles, Trash2, X
 } from 'lucide-react'
-import { api, clearAccessToken, setAccessToken } from './services/api'
+import { api, apiStream, clearAccessToken, setAccessToken } from './services/api'
+import { consumeChatStream } from './services/chatStream'
 import { createPredictionSchema } from './services/featureValidation'
 import type { CarInput, Feature, Prediction, User } from './types'
 
@@ -171,8 +172,8 @@ function AppShell() {
         <div className="sidebar-caption">Workspace</div>
         <nav className="side-nav" aria-label="Main navigation">
           {links.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} aria-label={to === '/chat' ? `${label}, coming soon` : label} title={to === '/chat' ? `${label}, coming soon` : label} onClick={() => closeMobileSidebar()} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-              <Icon size={18} /><span>{label}</span>{to === '/predict' && <span className="nav-shortcut">+</span>}{to === '/chat' && <span className="nav-status">Soon</span>}
+            <NavLink key={to} to={to} aria-label={label} title={label} onClick={() => closeMobileSidebar()} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+              <Icon size={18} /><span>{label}</span>{to === '/predict' && <span className="nav-shortcut">+</span>}
             </NavLink>
           ))}
         </nav>
@@ -346,6 +347,11 @@ function AuthPage({ mode }: { mode: 'login' | 'register' }) {
 function DashboardPage() {
   const { user } = useAuth()
   const predictionsQuery = useQuery({ queryKey: ['predictions', 1], queryFn: () => api<PageResult<Prediction>>('/predictions?page=1&page_size=8') })
+  const modelQuery = useQuery({
+    queryKey: ['model-info'],
+    queryFn: () => api<ModelInfo>('/model/info'),
+    retry: false,
+  })
   const predictions = predictionsQuery.data?.items ?? []
   const latest = predictions[0]
   const chartData = [...predictions].reverse().map((entry) => ({
@@ -368,7 +374,12 @@ function DashboardPage() {
       </section>
       <section className="stat-grid">
         <StatCard label="Predictions saved" value={predictionsQuery.isLoading ? '—' : predictionsQuery.data?.total ?? predictions.length} hint="In your account" icon={<Activity size={18} />} />
-        <StatCard label="AI chat" value={<span className="stat-coming-soon">Coming soon</span>} hint="Not available yet" icon={<MessageCircle size={18} />} />
+        <StatCard
+          label="AI chat"
+          value={modelQuery.isLoading ? 'Checking' : modelQuery.data?.chat_assistant_available ? 'Available' : 'Unavailable'}
+          hint={modelQuery.isError ? 'Provider status unavailable' : modelQuery.data?.chat_model ?? 'Local model provider'}
+          icon={<MessageCircle size={18} />}
+        />
         <div className="stat-card model-stat"><div className="stat-top"><span className="stat-label">Active model</span><span className="online-mark"><i /> Ready</span></div><strong>Peugeot 206</strong><span className="stat-hint">Linear Regression · {latest?.model_version ?? 'trained model'}</span></div>
       </section>
       <section className="dashboard-grid">
@@ -382,8 +393,8 @@ function DashboardPage() {
         </div>
       </section>
       <section className="dashboard-bottom">
-        <div className="panel conversations-panel coming-soon-panel"><div className="panel-heading"><span className="availability-badge">Coming soon</span><h2>AI conversations</h2></div>
-          <p>Conversation tools are not available yet. This section will be ready when AI chat is fully developed.</p>
+        <div className="panel conversations-panel"><div className="panel-heading"><h2>AI conversations</h2><Link to="/chat" className="quiet-link">Open chat <ArrowRight size={14} /></Link></div>
+          <p className="small-muted">Ask the local assistant about Peugeot 206 pricing and your saved predictions. <Link to="/chat">Start a conversation</Link>.</p>
         </div>
         <div className="scope-card"><span className="scope-icon"><ShieldCheck size={19} /></span><span className="micro-label">A NOTE ON SCOPE</span><h3>One car, six inputs.</h3><p>This model was trained on Peugeot 206 listings. Predictions are estimates and should not be treated as appraisals.</p><Link to="/model">Explore model details <ArrowRight size={14} /></Link></div>
       </section>
@@ -516,13 +527,445 @@ function ComparePage() {
   </div>
 }
 
+type ChatMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at?: string
+  message_metadata?: { status?: string; model?: string; source?: string } | null
+}
+
+type ConversationSummary = {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  last_message_preview?: string | null
+  last_message_at?: string | null
+}
+
 function ChatPage() {
-  return <div className="chat-page"><section className="chat-coming-soon panel" aria-labelledby="chat-coming-soon-title">
-    <span className="result-orb"><MessageCircle size={22} /></span>
-    <span className="availability-badge">Coming soon</span>
-    <h1 id="chat-coming-soon-title">AI conversations are not ready yet.</h1>
-    <p>This part of the application is still being developed. Conversation and AI chat features will be available here in a future update.</p>
-  </section></div>
+  const { user } = useAuth()
+  const { conversationId } = useParams()
+  const navigate = useNavigate()
+  const [draft, setDraft] = useState('')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(conversationId ?? null)
+  const [isSending, setIsSending] = useState(false)
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const [chatError, setChatError] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historySearch, setHistorySearch] = useState('')
+  const [selectedModel, setSelectedModel] = useState('')
+  const [renameId, setRenameId] = useState<string | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const streamController = useRef<AbortController | null>(null)
+  const historyPanel = useRef<HTMLDivElement>(null)
+  const queryClient = useQueryClient()
+  const modelQuery = useQuery({
+    queryKey: ['model-info'],
+    queryFn: () => api<ModelInfo>('/model/info'),
+    retry: false,
+    refetchInterval: 10000,
+  })
+  const available = modelQuery.data?.chat_assistant_available === true
+  const models = modelQuery.data?.chat_models ?? []
+  const statusLabel = modelQuery.isLoading
+    ? 'Model loading'
+    : modelQuery.isError
+      ? 'Status unavailable'
+      : available
+        ? 'Provider online'
+        : 'Local AI unavailable'
+  const statusClass = available ? 'local-ai-ready' : 'local-ai-unavailable'
+  const historyQuery = useQuery({
+    queryKey: ['conversations', historySearch],
+    queryFn: () => api<{ items: ConversationSummary[]; total: number }>(
+      `/conversations?search=${encodeURIComponent(historySearch)}&limit=50`
+    ),
+    enabled: historyOpen,
+  })
+  const suggestions = [
+    'Explain my latest price estimate',
+    'What affects Peugeot 206 prices?',
+    'Compare car specifications',
+    'What can you tell me about my saved predictions?'
+  ]
+
+  useEffect(() => {
+    if (modelQuery.data?.chat_model) setSelectedModel(modelQuery.data.chat_model)
+  }, [modelQuery.data?.chat_model])
+
+  useEffect(() => {
+    let active = true
+    setActiveConversationId(conversationId ?? null)
+    setMessages([])
+    setChatError('')
+    if (!conversationId) {
+      setIsLoadingMessages(false)
+      return () => { active = false }
+    }
+
+    setIsLoadingMessages(true)
+    api<{ items: ChatMessage[] }>(`/conversations/${conversationId}/messages`)
+      .then((response) => {
+        if (active) setMessages(response.items.filter((message) => message.message_metadata?.status !== 'superseded'))
+      })
+      .catch((error: unknown) => {
+        if (active) setChatError(errorMessage(error))
+      })
+      .finally(() => { if (active) setIsLoadingMessages(false) })
+    return () => { active = false }
+  }, [conversationId])
+
+  useEffect(() => {
+    if (!historyOpen) return
+    function dismiss(event: MouseEvent | KeyboardEvent) {
+      if (event instanceof KeyboardEvent && event.key === 'Escape') {
+        setHistoryOpen(false)
+        return
+      }
+      if (event instanceof MouseEvent && !historyPanel.current?.contains(event.target as Node)) {
+        setHistoryOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', dismiss)
+    document.addEventListener('keydown', dismiss)
+    return () => {
+      document.removeEventListener('mousedown', dismiss)
+      document.removeEventListener('keydown', dismiss)
+    }
+  }, [historyOpen])
+
+  function applyStreamEvent(
+    event: { event: string; data: Record<string, unknown> },
+    userDraftId: string | null,
+    assistantDraftId: string,
+    replacedMessageId?: string
+  ) {
+    if (event.event === 'start' && typeof event.data.user_message_id === 'string') {
+      const savedUserId = event.data.user_message_id
+      if (userDraftId) {
+        setMessages((current) => current.map((message) =>
+          message.id === userDraftId ? { ...message, id: savedUserId } : message
+        ))
+      }
+      setMessages((current) => current.some((message) => message.id === assistantDraftId)
+        ? current
+        : [...current, { id: assistantDraftId, role: 'assistant', content: '' }])
+    }
+    if (event.event === 'token' && typeof event.data.token === 'string') {
+      setMessages((current) => current.map((message) =>
+        message.id === assistantDraftId
+          ? { ...message, content: message.content + String(event.data.token) }
+          : message
+      ))
+    }
+    if (event.event === 'done' && event.data.message && typeof event.data.message === 'object') {
+      const completed = event.data.message as ChatMessage
+      setMessages((current) => [
+        ...current.filter((message) => message.id !== assistantDraftId && message.id !== replacedMessageId),
+        completed,
+      ])
+    }
+  }
+
+  async function sendStream(
+    conversationIdToUse: string,
+    value: string,
+    userDraftId: string | null,
+    replacedMessageId?: string
+  ) {
+    const controller = new AbortController()
+    streamController.current = controller
+    const assistantDraftId = `assistant-${Date.now()}`
+    const path = replacedMessageId
+      ? `/conversations/${conversationIdToUse}/messages/${replacedMessageId}/regenerate/stream`
+      : `/conversations/${conversationIdToUse}/messages/stream`
+    const body = replacedMessageId
+      ? { model: selectedModel || undefined }
+      : { content: value, model: selectedModel || undefined }
+    const response = await apiStream(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    let completed = false
+    let started = false
+    try {
+      await consumeChatStream(response, (event) => {
+        applyStreamEvent(event, userDraftId, assistantDraftId, replacedMessageId)
+        if (event.event === 'start') started = true
+        if (event.event === 'done') completed = true
+        if (event.event === 'start' && userDraftId) {
+          void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+        }
+      })
+      if (!completed) throw new Error('The assistant stream ended before completion.')
+    } catch (error) {
+      if (!started) throw error
+      const stopped = error instanceof DOMException && error.name === 'AbortError'
+      setChatError(stopped ? 'Generation stopped. Any partial response was saved.' : errorMessage(error))
+      setMessages((current) => current.map((message) =>
+        message.id === assistantDraftId
+          ? { ...message, message_metadata: { status: 'interrupted', model: selectedModel } }
+          : message
+      ))
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      return
+    }
+    await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+  }
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const value = draft.trim()
+    if (!value || isSending) return
+    setChatError('')
+    setDraft('')
+    setIsSending(true)
+    const userDraftId = `user-${Date.now()}`
+    setMessages((current) => [...current, { id: userDraftId, role: 'user', content: value }])
+
+    try {
+      let conversationIdToUse = activeConversationId
+      if (!conversationIdToUse) {
+        const created = await api<{ items: ConversationSummary[] }>(
+          '/conversations',
+          { method: 'POST', body: JSON.stringify({ title: value.slice(0, 60) || 'New conversation' }) }
+        )
+        conversationIdToUse = created.items[0]?.id ?? null
+        if (!conversationIdToUse) throw new Error('Could not create a conversation.')
+        setActiveConversationId(conversationIdToUse)
+      }
+
+      if (available) {
+        await sendStream(conversationIdToUse, value, userDraftId)
+      } else {
+        const response = await api<{ items: ChatMessage[]; assistant_response_available: boolean }>(
+          `/conversations/${conversationIdToUse}/messages`,
+          { method: 'POST', body: JSON.stringify({ content: value }) }
+        )
+        setMessages((current) => [
+          ...current.filter((message) => message.id !== userDraftId),
+          ...response.items,
+        ])
+      }
+      navigate(`/chat/${conversationIdToUse}`)
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setChatError('Generation stopped. Any partial response was saved.')
+      } else {
+        setMessages((current) => current.filter((message) =>
+          message.id !== userDraftId && !message.id.startsWith('assistant-')
+        ))
+        setChatError(errorMessage(error))
+      }
+    } finally {
+      streamController.current = null
+      setIsSending(false)
+    }
+  }
+
+  async function regenerate(message: ChatMessage) {
+    if (!activeConversationId || isSending || !available) return
+    setChatError('')
+    setIsSending(true)
+    try {
+      await sendStream(activeConversationId, '', null, message.id)
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setChatError(errorMessage(error))
+    } finally {
+      streamController.current = null
+      setIsSending(false)
+    }
+  }
+
+  async function renameConversation(conversation: ConversationSummary) {
+    if (!renameTitle.trim()) return
+    try {
+      await api(`/conversations/${conversation.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: renameTitle.trim() }),
+      })
+      setRenameId(null)
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    } catch (error) {
+      setChatError(errorMessage(error))
+    }
+  }
+
+  async function deleteConversation(conversation: ConversationSummary) {
+    if (!window.confirm(`Delete "${conversation.title}" and its messages?`)) return
+    try {
+      await api(`/conversations/${conversation.id}`, { method: 'DELETE' })
+      if (activeConversationId === conversation.id) {
+        setMessages([])
+        setActiveConversationId(null)
+        navigate('/chat')
+      }
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    } catch (error) {
+      setChatError(errorMessage(error))
+    }
+  }
+
+  async function copyMessage(message: ChatMessage) {
+    try {
+      await navigator.clipboard.writeText(message.content)
+      setCopiedMessageId(message.id)
+      window.setTimeout(() => setCopiedMessageId(null), 1500)
+    } catch {
+      setChatError('Could not copy the response to the clipboard.')
+    }
+  }
+
+  function startNewConversation() {
+    streamController.current?.abort()
+    setDraft('')
+    setMessages([])
+    setActiveConversationId(null)
+    setChatError('')
+    setHistoryOpen(false)
+    navigate('/chat')
+  }
+
+  function stopGeneration() {
+    streamController.current?.abort()
+  }
+
+  return (
+    <div className="chat-page">
+      <div className="assistant-shell">
+        <header className="assistant-header">
+          <div>
+            <div className="eyebrow"><span className="eyebrow-dot" /> LOCAL AI</div>
+            <h1>Your Car AI Assistant</h1>
+          </div>
+          <span className={`assistant-status ${statusClass}`}>{statusLabel}</span>
+        </header>
+
+        <p className="assistant-description">Ask about car prices, explore your previous estimates, and understand vehicle data with your local AI assistant.</p>
+
+        <div className="chat-toolbar">
+          <button type="button" className="button button-outline button-small" onClick={startNewConversation}>
+            <Plus size={15} /> New conversation
+          </button>
+          <div className="history-control" ref={historyPanel}>
+            <button
+              type="button"
+              className="button button-outline button-small"
+              aria-expanded={historyOpen}
+              aria-controls="conversation-history"
+              onClick={() => setHistoryOpen((open) => !open)}
+            ><History size={15} /> History <Search size={14} /></button>
+            {historyOpen && (
+              <div className="conversation-history-popover" id="conversation-history" role="dialog" aria-label="Conversation history">
+                <label className="sr-only" htmlFor="conversation-search">Search conversations</label>
+                <div className="history-search-field"><Search size={15} /><input id="conversation-search" value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search conversations…" autoFocus /></div>
+                {historyQuery.isLoading ? <p className="history-empty">Loading history…</p>
+                  : historyQuery.isError ? <p className="history-error" role="alert">Could not load conversation history.</p>
+                    : !historyQuery.data?.items.length ? <p className="history-empty">No conversations found.</p>
+                      : <ul className="history-list">{historyQuery.data.items.map((conversation) => (
+                        <li key={conversation.id} className={conversation.id === activeConversationId ? 'active' : ''}>
+                          {renameId === conversation.id ? (
+                            <form className="history-rename-form" onSubmit={(event) => { event.preventDefault(); void renameConversation(conversation) }}>
+                              <input aria-label="Conversation title" value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} maxLength={200} autoFocus />
+                              <button type="submit" aria-label="Save conversation title">Save</button>
+                            </form>
+                          ) : (
+                            <button type="button" className="history-open" onClick={() => { setHistoryOpen(false); navigate(`/chat/${conversation.id}`) }}>
+                              <strong>{conversation.title}</strong>
+                              <small>{conversation.last_message_preview || 'No messages yet'}</small>
+                              <time>{formatConversationDate(conversation.last_message_at ?? conversation.updated_at)}</time>
+                            </button>
+                          )}
+                          <span className="history-actions">
+                            <button type="button" aria-label={`Rename ${conversation.title}`} onClick={() => { setRenameId(conversation.id); setRenameTitle(conversation.title) }}><Pencil size={14} /></button>
+                            <button type="button" aria-label={`Delete ${conversation.title}`} onClick={() => void deleteConversation(conversation)}><Trash2 size={14} /></button>
+                          </span>
+                        </li>
+                      ))}</ul>}
+                <button type="button" className="history-close" onClick={() => setHistoryOpen(false)}><X size={14} /> Close</button>
+              </div>
+            )}
+          </div>
+          <label className="model-select-label" htmlFor="assistant-model">Model
+            <select id="assistant-model" value={selectedModel} disabled={!available || models.length === 0 || isSending} onChange={(event) => setSelectedModel(event.target.value)}>
+              {models.length === 0 && <option value={selectedModel}>{selectedModel || 'Unavailable'}</option>}
+              {models.map((model) => <option key={model} value={model}>{model}</option>)}
+            </select>
+          </label>
+        </div>
+
+        {historyOpen && <button type="button" className="history-mobile-backdrop" aria-label="Close conversation history" onClick={() => setHistoryOpen(false)} />}
+        {chatError && <div className="assistant-error" role="alert">{chatError}</div>}
+        {isLoadingMessages && <div className="history-empty" role="status">Loading conversation…</div>}
+
+        {!messages.length && !isLoadingMessages ? (
+          <div className="assistant-landing" aria-label="Assistant landing panel">
+            <div className="assistant-suggestions" aria-label="Suggested prompts">
+              {suggestions.map((suggestion) => (
+                <button key={suggestion} type="button" className="assistant-chip" onClick={() => setDraft(suggestion)}>
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="chat-thread" role="log" aria-live="polite">
+            {messages.map((message) => (
+              <div key={message.id} className={`message-row ${message.role}`}>
+                <div className="message-avatar" aria-hidden="true">{message.role === 'user' ? initials(user?.full_name) : 'AI'}</div>
+                <div className="message-bubble">
+                  <span className="message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span>
+                  <p>{message.content || (isSending ? '…' : '')}</p>
+                  {message.role === 'assistant' && message.content && (
+                    <div className="message-actions">
+                      <button type="button" aria-label={copiedMessageId === message.id ? 'Copied response' : 'Copy response'} onClick={() => void copyMessage(message)}><Copy size={14} /> {copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>
+                      {!isSending && available && messages[messages.length - 1]?.id === message.id && (
+                        <button type="button" aria-label="Regenerate response" onClick={() => void regenerate(message)}><Sparkles size={14} /> Regenerate</button>
+                      )}
+                    </div>
+                  )}
+                  {message.message_metadata?.status === 'interrupted' && <small className="interrupted-label">Response stopped early.</small>}
+                </div>
+              </div>
+            ))}
+            {isSending && !messages.some((message) => message.id.startsWith('assistant-') && !message.content) && (
+              <div className="message-row assistant">
+                <div className="message-avatar" aria-hidden="true">AI</div>
+                <div className="message-bubble typing-bubble">
+                  <span className="message-role">Assistant</span>
+                  <div className="typing-dots" aria-label="Assistant is preparing a response"><span /><span /><span /></div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <form className="assistant-composer" onSubmit={handleSubmit}>
+          <label htmlFor="assistant-prompt" className="sr-only">Ask your car assistant</label>
+          <textarea
+            id="assistant-prompt"
+            rows={1}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={available ? 'Ask about your prediction, the market, or your data…' : 'Write a note or ask when the local model is available…'}
+          />
+          <div className="composer-actions">
+            <span className="assistant-hint">{available ? `Connected to ${selectedModel || modelQuery.data?.chat_model || 'your local model'}.` : 'AI is unavailable; submitted messages are saved as notes without an AI reply.'}</span>
+            {isSending
+              ? <button type="button" className="button button-outline" onClick={stopGeneration}>Stop generation</button>
+              : <button type="submit" className="button button-dark" disabled={draft.trim().length === 0}>{available ? 'Send' : 'Save note'}</button>}
+          </div>
+        </form>
+      </div>
+    </div>
+  )
 }
 
 function ProfilePage() {
@@ -641,6 +1084,13 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function formatConversationDate(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? 'Time unavailable'
+    : date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message
   return 'Something went wrong. Please try again.'
@@ -648,7 +1098,15 @@ function errorMessage(error: unknown) {
 
 type PageResult<T> = { items: T[]; total: number; page?: number; page_size?: number; pages?: number; has_more?: boolean }
 type FeatureResponse = { features?: Feature[]; input_features?: Feature[]; items?: Feature[] } | Feature[]
-type ModelInfo = { vehicle_model?: string; model_type?: string; model_version?: string; chat_assistant_available?: boolean; target?: { name: string; unit?: string | null } }
+type ModelInfo = {
+  vehicle_model?: string
+  model_type?: string
+  model_version?: string
+  chat_assistant_available?: boolean
+  chat_model?: string
+  chat_models?: string[]
+  target?: { name: string; unit?: string | null }
+}
 const INPUT_LABELS: Array<[keyof CarInput, string]> = [['year', 'Year'], ['mileage', 'Mileage'], ['trim', 'Trim'], ['transmission', 'Transmission'], ['body_status', 'Body condition'], ['color', 'Color']]
 
 function getFeatures(response?: FeatureResponse): Feature[] {

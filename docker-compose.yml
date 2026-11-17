@@ -4,6 +4,18 @@ x-backend-environment: &backend-environment
   ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
   REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  AI_ENABLED: ${AI_ENABLED:-true}
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-gemma3:1b}
+  AI_CONTEXT_WINDOW: ${AI_CONTEXT_WINDOW:-2048}
+  AI_MAX_HISTORY_MESSAGES: ${AI_MAX_HISTORY_MESSAGES:-8}
+  AI_TEMPERATURE: ${AI_TEMPERATURE:-0.3}
+  AI_ENABLE_RAG: ${AI_ENABLE_RAG:-false}
+  AI_ENABLE_TOOLS: ${AI_ENABLE_TOOLS:-true}
+  AI_STORAGE_PATH: /app/local_data
+  AI_VECTOR_DB_PATH: /app/local_data/chroma
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embeddinggemma}
+  EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-768}
   POSTGRES_HOST: db
   POSTGRES_PORT: "5432"
   POSTGRES_DB: ${POSTGRES_DB:-carprice}
@@ -48,6 +60,8 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment: *backend-environment
+    volumes:
+      - assistant_data:/app/local_data
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
@@ -84,5 +98,23 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  assistant_data:
+  ollama_data:

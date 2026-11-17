@@ -15,6 +15,16 @@ frontend/dist/
 .env
 .env.*
 !.env.example
+/backend.db
+/backend/*.db
+/backend/*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+/local_data/
+/chroma/
+/ollama/
+/models/
 
 # Local tooling
 .idea/workspace.xml

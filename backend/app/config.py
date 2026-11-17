@@ -23,6 +23,18 @@ class Settings:
     environment: str
     cors_origins: tuple[str, ...]
     chat_provider: str | None
+    ollama_base_url: str
+    default_model: str
+    ai_enabled: bool
+    ai_context_window: int
+    ai_max_history_messages: int
+    ai_temperature: float
+    ai_enable_rag: bool
+    ai_enable_tools: bool
+    ai_storage_path: Path
+    ai_vector_db_path: Path
+    embedding_model: str
+    embedding_dimension: int
     model_path: Path
     preprocessor_path: Path
     jwt_algorithm: str
@@ -78,6 +90,36 @@ def load_settings() -> Settings:
         for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
         if origin.strip()
     )
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip() or "http://127.0.0.1:11434"
+
+    def boolean_setting(name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise RuntimeError(f"{name} must be a boolean value.")
+
+    def storage_path(name: str, default: str) -> Path:
+        path = Path(os.getenv(name, default))
+        return path if path.is_absolute() else REPOSITORY_ROOT / path
+
+    context_window = int(os.getenv("AI_CONTEXT_WINDOW", "2048"))
+    max_history_messages = int(os.getenv("AI_MAX_HISTORY_MESSAGES", "8"))
+    temperature = float(os.getenv("AI_TEMPERATURE", "0.3"))
+    embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+    if context_window < 256:
+        raise RuntimeError("AI_CONTEXT_WINDOW must be at least 256.")
+    if max_history_messages < 1:
+        raise RuntimeError("AI_MAX_HISTORY_MESSAGES must be at least 1.")
+    if not 0 <= temperature <= 2:
+        raise RuntimeError("AI_TEMPERATURE must be between 0 and 2.")
+    if embedding_dimension < 1:
+        raise RuntimeError("EMBEDDING_DIMENSION must be a positive integer.")
+
     return Settings(
         database_url=database_url,
         jwt_secret_key=secret,
@@ -86,6 +128,22 @@ def load_settings() -> Settings:
         environment=environment,
         cors_origins=origins,
         chat_provider=os.getenv("CHAT_PROVIDER") or None,
+        ollama_base_url=ollama_base_url,
+        default_model=(
+            os.getenv("OLLAMA_CHAT_MODEL")
+            or os.getenv("DEFAULT_MODEL")
+            or "gemma3:1b"
+        ).strip(),
+        ai_enabled=boolean_setting("AI_ENABLED", False),
+        ai_context_window=context_window,
+        ai_max_history_messages=max_history_messages,
+        ai_temperature=temperature,
+        ai_enable_rag=boolean_setting("AI_ENABLE_RAG", False),
+        ai_enable_tools=boolean_setting("AI_ENABLE_TOOLS", True),
+        ai_storage_path=storage_path("AI_STORAGE_PATH", "local_data"),
+        ai_vector_db_path=storage_path("AI_VECTOR_DB_PATH", "local_data/chroma"),
+        embedding_model=os.getenv("EMBEDDING_MODEL", "embeddinggemma").strip() or "embeddinggemma",
+        embedding_dimension=embedding_dimension,
         model_path=Path(os.getenv("MODEL_PATH", str(DEFAULT_MODEL_PATH))),
         preprocessor_path=Path(os.getenv("PREPROCESSOR_PATH", str(DEFAULT_PREPROCESSOR_PATH))),
         jwt_algorithm=jwt_algorithm,

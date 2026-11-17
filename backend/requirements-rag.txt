@@ -1,0 +1,2 @@
+# Optional persistent vector storage. No model or embedding weights are installed by this file.
+chromadb>=1.0,<2.0

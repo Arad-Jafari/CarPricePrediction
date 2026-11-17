@@ -13,6 +13,10 @@ venv
 backend/tests
 backend/*.db
 backend/*.db-*
+local_data
+chroma
+ollama
+models
 .env
 .env.*
 !.env.example

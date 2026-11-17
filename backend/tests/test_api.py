@@ -67,6 +67,23 @@ def test_model_features_and_prediction_integration(client):
     assert (history["total"], history["page"], history["page_size"]) == (1, 1, 1)
 
 
+def test_model_status_is_unavailable_when_provider_has_no_installed_models(client):
+    class EmptyModelProvider:
+        default_model = "not-installed"
+
+        def health_check(self):
+            return True
+
+        def list_models(self):
+            return []
+
+    client.app.state.chat_provider = EmptyModelProvider()
+    status = client.get("/api/v1/model/info").json()
+    assert status["chat_assistant_available"] is False
+    assert status["chat_models"] == []
+    assert client.get("/api/v1/chat/models").json()["available"] is False
+
+
 def test_versioned_predict_endpoint_uses_the_real_model(client):
     _, headers = auth_headers(client)
     response = client.post("/api/v1/predict", json=valid_car(), headers=headers)

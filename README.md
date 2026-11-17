@@ -39,7 +39,8 @@ CarEstimation/
 │   └── inference.py         # Framework-independent inference entry point
 ├── docs/
 │   ├── PROJECT_ANALYSIS.md
-│   └── IMPLEMENTATION_PLAN.md
+│   ├── IMPLEMENTATION_PLAN.md
+│   └── ai-assistant/       # Local assistant implementation and validation guide
 ├── .env.example
 ├── docker-compose.yml
 └── README.md
@@ -57,7 +58,7 @@ The model and preprocessor are separate trusted joblib artifacts under `ml/artif
 
 The frontend is a React 19 and TypeScript application built with Vite. It uses React Router for page navigation, TanStack Query for API data, React Hook Form and Zod for forms and validation, Recharts for prediction history, and Lucide icons. Most of the current UI styling lives in `frontend/src/App.css`; global styles, typography, focus treatment, and color tokens are in `frontend/src/index.css`. Routes and page components are primarily in `frontend/src/App.tsx`.
 
-The public experience includes a landing page (`/`), a model-information page (`/model`), and sign-in/registration pages (`/login`, `/register`). The authenticated workspace has a shared desktop sidebar/top bar and a collapsible mobile navigation drawer, with dashboard (`/dashboard`), new prediction (`/predict`), history (`/predictions/history`), comparison (`/compare`), profile (`/profile`), and a conversation section (`/chat`). Chat is currently presented as unavailable/coming soon; the interface should not imply that an AI assistant is connected.
+The public experience includes a landing page (`/`), a model-information page (`/model`), and sign-in/registration pages (`/login`, `/register`). The authenticated workspace has a shared desktop sidebar/top bar and a collapsible mobile navigation drawer, with dashboard (`/dashboard`), new prediction (`/predict`), history (`/predictions/history`), comparison (`/compare`), profile (`/profile`), and local assistant conversations (`/chat`). Chat requires an explicitly enabled, reachable Ollama provider and an installed model; the UI reports provider availability instead of claiming AI responses when unavailable.
 
 The visual direction is premium, clean automotive UI: warm ivory backgrounds, off-white surfaces, charcoal text, deep forest-green actions, and a restrained bronze accent. Reuse the semantic CSS variables in `frontend/src/index.css`, keep typography readable for English and Persian, and preserve clear active, hover, keyboard-focus, loading, error, and empty states. Layouts should adapt without clipping or horizontal overflow at phone widths. Keep the local, attributed Peugeot 206 WebP photo on the model-information page; the landing page and login page currently use typographic graphics rather than car photography.
 
@@ -129,6 +130,10 @@ Open the Vite URL printed in the terminal (normally `http://localhost:5173`). Vi
 - `POST /api/v1/predict` — validate and save a prediction for the signed-in user.
 - `/api/v1/predictions/*` — prediction history, details, and deletion for the signed-in user.
 - `/api/v1/auth/*`, `/api/v1/users/*`, `/api/v1/predictions/*`, and `/api/v1/conversations/*` — authentication and user-scoped application data.
+- `GET /api/v1/chat/models` and `GET /api/v1/model/info` — local provider/model availability.
+- `POST /api/v1/conversations/{id}/messages/stream` — authenticated Server-Sent Events chat stream; completed responses are persisted.
+
+The assistant setup, configuration, lifecycle, streaming, optional RAG adapters, Docker notes, and current validation limits are documented in [docs/ai-assistant/README.md](docs/ai-assistant/README.md).
 
 ## Verified model input contract
 

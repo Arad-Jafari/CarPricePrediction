@@ -32,6 +32,19 @@ def _clear_settings(monkeypatch):
         "MODEL_PATH",
         "PREPROCESSOR_PATH",
         "JWT_ALGORITHM",
+        "AI_ENABLED",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_CHAT_MODEL",
+        "DEFAULT_MODEL",
+        "AI_CONTEXT_WINDOW",
+        "AI_MAX_HISTORY_MESSAGES",
+        "AI_TEMPERATURE",
+        "AI_ENABLE_RAG",
+        "AI_ENABLE_TOOLS",
+        "AI_STORAGE_PATH",
+        "AI_VECTOR_DB_PATH",
+        "EMBEDDING_MODEL",
+        "EMBEDDING_DIMENSION",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -107,6 +120,27 @@ def test_model_path_and_jwt_algorithm_settings(monkeypatch):
         configured.jwt_secret_key,
         algorithms=[configured.jwt_algorithm],
     )["type"] == "access"
+
+
+def test_ai_configuration_is_validated_and_model_can_be_switched(monkeypatch):
+    _clear_settings(monkeypatch)
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    monkeypatch.setenv("OLLAMA_CHAT_MODEL", "qwen2.5:1.5b")
+    monkeypatch.setenv("AI_CONTEXT_WINDOW", "4096")
+    monkeypatch.setenv("AI_MAX_HISTORY_MESSAGES", "6")
+    monkeypatch.setenv("AI_TEMPERATURE", "0.5")
+    settings = load_settings()
+    assert settings.ai_enabled
+    assert settings.ollama_base_url == "http://127.0.0.1:11434"
+    assert settings.default_model == "qwen2.5:1.5b"
+    assert settings.ai_context_window == 4096
+    assert settings.ai_max_history_messages == 6
+    assert settings.ai_temperature == 0.5
+
+    monkeypatch.setenv("AI_TEMPERATURE", "2.1")
+    with pytest.raises(RuntimeError, match="AI_TEMPERATURE"):
+        load_settings()
 
 
 def test_predictor_is_initialized_during_lifespan_and_can_be_injected(monkeypatch):

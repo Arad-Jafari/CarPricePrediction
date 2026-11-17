@@ -91,6 +91,12 @@ class ConversationUpdateRequest(BaseModel):
 class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     content: Annotated[str, Field(min_length=1, max_length=12000)]
+    model: Annotated[str | None, Field(max_length=200)] = None
+
+
+class RegenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: Annotated[str | None, Field(max_length=200)] = None
 
 
 class UserResponse(BaseModel):
@@ -133,6 +139,11 @@ class ConversationResponse(BaseModel):
     updated_at: datetime
 
 
+class ConversationListItemResponse(ConversationResponse):
+    last_message_preview: str | None = None
+    last_message_at: datetime | None = None
+
+
 class MessageResponse(BaseModel):
     id: uuid.UUID
     role: Literal["user", "assistant", "system"]
@@ -158,7 +169,7 @@ class ConversationDetailResponse(BaseModel):
 
 
 class ConversationListResponse(BaseModel):
-    items: list[ConversationResponse]
+    items: list[ConversationListItemResponse]
     total: int
 
 

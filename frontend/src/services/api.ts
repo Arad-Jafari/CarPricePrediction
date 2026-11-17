@@ -18,16 +18,26 @@ type ApiOptions = RequestInit & { retryAuth?: boolean }
 
 export async function api<T = void>(path: string, options: ApiOptions = {}): Promise<T> {
   const { retryAuth = true, ...init } = options
+  return parseResponse<T>(await sendWithAuth(path, init, retryAuth))
+}
+
+export async function apiStream(path: string, options: ApiOptions = {}): Promise<Response> {
+  const { retryAuth = true, ...init } = options
+  const response = await sendWithAuth(path, init, retryAuth)
+  if (!response.ok) await parseResponse<never>(response)
+  return response
+}
+
+async function sendWithAuth(path: string, init: RequestInit, retryAuth: boolean) {
   const response = await send(path, init)
   const authNoRetry = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout']
   if (response.status === 401 && retryAuth && !authNoRetry.includes(path)) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {
-      const retried = await send(path, init)
-      return parseResponse<T>(retried)
+      return send(path, init)
     }
   }
-  return parseResponse<T>(response)
+  return response
 }
 
 async function send(path: string, init: RequestInit) {

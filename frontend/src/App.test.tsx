@@ -17,6 +17,17 @@ function jsonResponse(data: unknown, status = 200) {
   })
 }
 
+function sseResponse(events: Array<[string, unknown]>) {
+  const encoder = new TextEncoder()
+  const body = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('')
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(body))
+      controller.close()
+    }
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+}
+
 function renderApp() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -56,20 +67,105 @@ describe('application authentication routes', () => {
     expect(await screen.findByRole('heading', { name: 'Welcome back.' })).toBeTruthy()
   })
 
-  it('shows an unavailable notice instead of chat controls', async () => {
+  it('shows the assistant landing state with a realistic unavailable status', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/auth/me')) return jsonResponse(user)
+      if (String(input).endsWith('/model/info')) return jsonResponse({ vehicle_model: 'Peugeot 206', model_version: 'test-version', chat_assistant_available: false, target: { name: 'price', unit: null } })
       return jsonResponse({ error: { code: 'not_found', message: 'Not found.' } }, 404)
     })
     vi.stubGlobal('fetch', fetchMock)
     window.history.replaceState({}, '', '/chat')
     renderApp()
 
-    expect(await screen.findByRole('heading', { name: 'AI conversations are not ready yet.' })).toBeTruthy()
-    expect(screen.getByText('Coming soon')).toBeTruthy()
-    expect(screen.queryByRole('textbox')).toBeNull()
-    expect(screen.queryByRole('button', { name: /start a conversation/i })).toBeNull()
+    expect(await screen.findByRole('heading', { name: 'Your Car AI Assistant' })).toBeTruthy()
+    expect(await screen.findByText(/local ai unavailable/i)).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: /ask your car assistant/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /send/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Explain my latest price estimate' })).toBeTruthy()
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/conversations'))).toBe(false)
+  })
+
+  it('creates a conversation and renders progressive backend SSE response events', async () => {
+    const streamRequestBodies: unknown[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return jsonResponse(user)
+      if (url.endsWith('/model/info')) return jsonResponse({
+        vehicle_model: 'Peugeot 206',
+        chat_assistant_available: true,
+        chat_model: 'gemma3:1b',
+        chat_models: ['gemma3:1b', 'qwen2.5:1.5b'],
+        target: { name: 'price', unit: null }
+      })
+      if (url.endsWith('/conversations') && init?.method === 'POST') {
+        return jsonResponse({ items: [{ id: 'conversation-1', title: 'Price factors', created_at: '2026-01-01', updated_at: '2026-01-01' }] }, 201)
+      }
+      if (url.endsWith('/messages/stream')) {
+        streamRequestBodies.push(JSON.parse(String(init?.body)))
+        return sseResponse([
+          ['start', { user_message_id: 'user-message-1', model: 'qwen2.5:1.5b' }],
+          ['token', { token: 'A real-time ' }],
+          ['token', { token: 'mocked response.' }],
+          ['done', { message: { id: 'assistant-message-1', role: 'assistant', content: 'A real-time mocked response.', message_metadata: { status: 'complete' } } }]
+        ])
+      }
+      if (url.endsWith('/conversations/conversation-1/messages')) return jsonResponse({
+        items: [
+          { id: 'user-message-1', role: 'user', content: 'What affects Peugeot prices?' },
+          { id: 'assistant-message-1', role: 'assistant', content: 'A real-time mocked response.', message_metadata: { status: 'complete' } }
+        ]
+      })
+      if (url.includes('/messages')) return jsonResponse({ items: [] })
+      if (url.includes('/conversations?')) return jsonResponse({ items: [], total: 0 })
+      return jsonResponse({ error: { code: 'not_found', message: 'Not found.' } }, 404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState({}, '', '/chat')
+    renderApp()
+
+    await screen.findByRole('heading', { name: 'Your Car AI Assistant' })
+    await waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).disabled).toBe(false))
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'qwen2.5:1.5b' } })
+    await userEvent.type(screen.getByRole('textbox', { name: /ask your car assistant/i }), 'What affects Peugeot prices?')
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText('A real-time mocked response.')).toBeTruthy()
+    expect(streamRequestBodies).toEqual([{ content: 'What affects Peugeot prices?', model: 'qwen2.5:1.5b' }])
+    expect(screen.getByRole('button', { name: 'Copy response' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Regenerate response' })).toBeTruthy()
+  })
+
+  it('searches and restores a conversation from the floating history panel', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return jsonResponse(user)
+      if (url.endsWith('/model/info')) return jsonResponse({ chat_assistant_available: false, target: { name: 'price', unit: null } })
+      if (url.includes('/conversations?')) return jsonResponse({
+        items: [{
+          id: 'conversation-2',
+          title: 'Price discussion',
+          created_at: '2026-01-01T10:00:00Z',
+          updated_at: '2026-01-02T10:00:00Z',
+          last_message_preview: 'Mileage and condition affect estimates.',
+          last_message_at: '2026-01-02T10:00:00Z'
+        }],
+        total: 1
+      })
+      if (url.endsWith('/conversations/conversation-2/messages')) return jsonResponse({
+        items: [{ id: 'restored-1', role: 'user', content: 'How does mileage matter?', created_at: '2026-01-02T10:00:00Z' }]
+      })
+      return jsonResponse({ error: { code: 'not_found', message: 'Not found.' } }, 404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState({}, '', '/chat')
+    renderApp()
+
+    await screen.findByRole('heading', { name: 'Your Car AI Assistant' })
+    await userEvent.click(screen.getByRole('button', { name: /history/i }))
+    expect(await screen.findByText('Mileage and condition affect estimates.')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: /Price discussion/ }))
+    expect(await screen.findByText('How does mileage matter?')).toBeTruthy()
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('search='))).toBe(true)
   })
 
   it('collapses the desktop sidebar while keeping its expand control available', async () => {
@@ -226,8 +322,8 @@ describe('application authentication routes', () => {
     expect(dashboardEstimate.textContent).toContain(formatPrice(183283706))
     expect(dashboardEstimate.textContent).toContain(formatPrice(416716294))
     expect(screen.queryByRole('img', { name: /Peugeot 206 hatchback photographed/ })).toBeNull()
-    expect(screen.getByText('Not available yet')).toBeTruthy()
-    expect(screen.getByText(/This section will be ready when AI chat is fully developed/)).toBeTruthy()
+    expect(screen.getByText('Unavailable')).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Start a conversation/ })).toBeTruthy()
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/conversations'))).toBe(false)
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
