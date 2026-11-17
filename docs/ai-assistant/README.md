@@ -173,19 +173,27 @@ short-lived container:
 docker run --rm -v "${PWD}\frontend:/src:ro" -w /tmp node:24-alpine sh -lc "cp -R /src /tmp/frontend && cd /tmp/frontend && npm ci && npm test && npm run lint && npm run build"
 ```
 
-The development environment used for this implementation had no host
-Node.js/npm and no reachable Docker daemon. Consequently the frontend tests,
-lint, build, and containerized validation have not run here. `docker compose
-config --quiet` did pass.
+The host has no Node.js/npm. Docker Desktop is available, but this environment
+currently receives a Docker Hub 403 when fetching base-image tokens; therefore
+the frontend Node image and a fresh Compose image build could not be run. A
+cached backend image was used with read-only mounts of the current backend
+source and dataset to run all backend tests inside Docker.
 
 ## Test evidence and current limitations
 
-- Backend: `python -m pytest -q` passed 38 tests, including streaming,
-  configuration, application-data authorization, and fake embedding/vector
-  store cases.
+- Backend: `python -m pytest -q` passed 38 tests on the host. The same 38 tests
+  also passed in Docker using the cached backend image, with the current source
+  and dataset mounted read-only and `AI_ENABLED=false`.
 - Backend: `python -m compileall -q backend\app backend\tests` passed.
-- Compose: `docker compose config --quiet` passed; services were not started.
-- Frontend: no test, lint, or build result is claimed.
+- Compose: `docker compose config --quiet` passed. A fresh
+  `docker compose up --build` was attempted but could not fetch Docker Hub base
+  image tokens (403); the pre-existing images were not treated as validation
+  of the current frontend/backend build.
+- Runtime smoke: current backend source, mounted into a cached backend image,
+  returned healthy API status and discovered the installed `gemma3:1b` model
+  through host Ollama. A real model completion/stream was not verified.
+- Frontend: no test, lint, or build result is claimed; Node.js/npm are absent
+  and the temporary Node image could not be fetched.
 - Real AI: no genuine model-generated response has been verified. Earlier
   Ollama generation failed with a CUDA kernel compatibility error. Do not
   declare production readiness until a real completion, streamed tokens,

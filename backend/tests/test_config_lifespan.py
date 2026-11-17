@@ -99,8 +99,8 @@ def test_model_path_and_jwt_algorithm_settings(monkeypatch):
     monkeypatch.setenv("MODEL_PATH", "weights/model.pkl")
     monkeypatch.setenv("PREPROCESSOR_PATH", "weights/preprocessor.pkl")
     settings = load_settings()
-    assert str(settings.model_path) == "weights\\model.pkl"
-    assert str(settings.preprocessor_path) == "weights\\preprocessor.pkl"
+    assert settings.model_path == Path("weights") / "model.pkl"
+    assert settings.preprocessor_path == Path("weights") / "preprocessor.pkl"
     assert settings.jwt_algorithm == "HS256"
 
     monkeypatch.setenv("JWT_ALGORITHM", "HS512")
